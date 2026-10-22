@@ -1,0 +1,172 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Version B — Deploy to Cloud Run
+# ══════════════════════════════════════════════════════════════════════════════
+# The AI audit gate runs LOCALLY before push (via audit.sh or git pre-push hook).
+# By the time code reaches this workflow, it has already passed the audit.
+#
+# This workflow focuses purely on:
+#   1. Build + push container image
+#   2. Deploy to Cloud Run
+#   3. Post-deploy verification
+#   4. Rollback on failure
+# ══════════════════════════════════════════════════════════════════════════════
+
+name: Deploy to Cloud Run (Version B — Local Audit)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  PROJECT_ID:   ${{ secrets.GCP_PROJECT_ID }}
+  REGION:       us-central1
+  SERVICE_NAME: safe-deployments-lab
+  IMAGE:        gcr.io/${{ secrets.GCP_PROJECT_ID }}/safe-deployments-lab
+
+jobs:
+
+  # ── Job 1: Build and Deploy ────────────────────────────────────────────────
+  deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    outputs:
+      previous_revision: ${{ steps.get_revision.outputs.revision }}
+      service_url:       ${{ steps.deploy.outputs.url }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker gcr.io --quiet
+
+      - name: Get current revision for rollback
+        id: get_revision
+        run: |
+          REVISION=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --region ${{ env.REGION }} \
+            --format "value(status.latestReadyRevisionName)" 2>/dev/null || echo "none")
+          echo "revision=${REVISION}" >> $GITHUB_OUTPUT
+          echo "Current revision: ${REVISION}"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --tag ${{ env.IMAGE }}:${{ github.sha }} \
+            --tag ${{ env.IMAGE }}:latest \
+            ./app
+
+      - name: Push image to Artifact Registry
+        run: |
+          docker push ${{ env.IMAGE }}:${{ github.sha }}
+          docker push ${{ env.IMAGE }}:latest
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          image:   ${{ env.IMAGE }}:${{ github.sha }}
+          region:  ${{ env.REGION }}
+          env_vars: |
+            APP_ENV=${{ secrets.APP_ENV }}
+            HOST=0.0.0.0
+            STORAGE_BUCKET=${{ secrets.STORAGE_BUCKET }}
+          secrets: |
+            DB_HOST=DB_HOST:latest
+            DB_NAME=DB_NAME:latest
+            DB_USER=DB_USER:latest
+            DB_PASSWORD=DB_PASSWORD:latest
+            COMMODITIES_API_KEY=COMMODITIES_API_KEY:latest
+
+  # ── Job 2: Post-deploy Verification ───────────────────────────────────────
+  verify:
+    name: Verify Deployment
+    runs-on: ubuntu-latest
+    needs: deploy
+    env:
+      SERVICE_URL: ${{ needs.deploy.outputs.service_url }}
+
+    steps:
+      - name: Wait for service to stabilize
+        run: sleep 10
+
+      - name: Health check
+        run: |
+          for i in {1..10}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" ${{ env.SERVICE_URL }}/health)
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ /health OK (attempt $i)"
+              break
+            fi
+            echo "Attempt $i: $STATUS — retrying..."
+            sleep 3
+            if [ "$i" = "10" ]; then
+              echo "❌ Health check failed"
+              exit 1
+            fi
+          done
+
+      - name: Verify DB connectivity
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" ${{ env.SERVICE_URL }}/api/records)
+          [ "$STATUS" != "200" ] && echo "❌ /api/records: $STATUS" && exit 1
+          echo "✅ /api/records OK"
+
+      - name: Verify storage connectivity
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" ${{ env.SERVICE_URL }}/api/files)
+          [ "$STATUS" != "200" ] && echo "❌ /api/files: $STATUS" && exit 1
+          echo "✅ /api/files OK"
+
+      - name: Verify config correctness
+        run: |
+          RESPONSE=$(curl -s ${{ env.SERVICE_URL }}/api/config/check)
+          echo "Config: $RESPONSE"
+          echo "$RESPONSE" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          warnings = d.get('audit_warnings', [])
+          if warnings:
+            print('⚠️  Runtime warnings detected:')
+            for w in warnings: print(f'   {w}')
+            sys.exit(1)
+          print('✅ Config OK')
+          "
+
+  # ── Job 3: Rollback on failure ─────────────────────────────────────────────
+  rollback:
+    name: Rollback on Failure
+    runs-on: ubuntu-latest
+    needs: [deploy, verify]
+    if: |
+      failure() &&
+      needs.deploy.outputs.previous_revision != 'none' &&
+      needs.deploy.result == 'success'
+
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Rollback to previous revision
+        run: |
+          PREV="${{ needs.deploy.outputs.previous_revision }}"
+          echo "⚠️  Rolling back to: ${PREV}"
+          gcloud run services update-traffic ${{ env.SERVICE_NAME }} \
+            --region ${{ env.REGION }} \
+            --to-revisions ${PREV}=100
+          echo "✅ Rollback complete"

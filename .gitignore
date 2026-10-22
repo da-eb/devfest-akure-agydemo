@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+
+# Environment files — never commit real secrets
+.env
+.env.local
+.env.production
+
+# AI assistant output
+audit-report.md
+agy-fixed-workflow.md
+generated-verification.yml
+verification-analysis.md
+
+# Service account key — must never be committed
+sa-key.json
+*.json.key
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.tar
+

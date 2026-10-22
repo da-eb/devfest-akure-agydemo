@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# ══════════════════════════════════════════════════════════════════════════════
+# Git pre-push hook — runs the agy audit before every push
+# ══════════════════════════════════════════════════════════════════════════════
+# Flow:
+#   git push → this hook → ./audit.sh --pre-push → agy audits the repo
+#     any critical finding  → exit 1 → git cancels the push → fix, push again
+#     no critical findings  → exit 0 → the push goes through
+#
+# The dependency check (--deps) is never run here, so the hook can't hang.
+#
+# Install:  ./scripts/setup-hooks.sh
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Git runs hooks from the repo root, but be explicit.
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+echo ""
+echo "Running agy audit before push..."
+echo ""
+
+if ! ./audit.sh --pre-push; then
+  echo ""
+  echo "Push aborted. Fix the critical findings above, then push again."
+  exit 1
+fi
+
+exit 0
