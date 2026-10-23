@@ -70,8 +70,39 @@ echo -e "${BLUE}→ Reading AGENTS.md rules...${NC}"
 echo -e "${BLUE}→ Scanning app/ + .github/workflows/ + config files...${NC}"
 echo ""
 
-# AGENTS.md is loaded automatically because we run from the repo root.
-AUDIT_OUTPUT=$(agy -p "audit" 2>&1)
+# ── Build the prompt ──────────────────────────────────────────────────────────
+# The files to audit go straight into the prompt, so agy never needs to run a
+# shell command (ls, cat, grep). Headless mode can't ask you to approve those,
+# so it auto-denies them and the audit would come back empty.
+# AGENTS.md is still loaded automatically because we run from the repo root.
+
+# Every file in the repo, so the audit can spot a committed .env or key file.
+if git rev-parse --is-inside-work-tree &> /dev/null; then
+  FILE_LIST=$(git ls-files)
+else
+  FILE_LIST=$(find . -type f -not -path './.git/*' | sed 's|^\./||' | sort)
+fi
+
+PROMPT="Run the audit defined in AGENTS.md on the files below.
+Every file you need is included in this message. Do not call any tools and do
+not run any commands. Read the contents below and write the report.
+
+=== Files tracked in this repo ===
+${FILE_LIST}
+"
+
+for f in app/* app/.env.example .github/workflows/*; do
+  [ -f "$f" ] || continue
+  # Skip anything large or binary; the audit only needs source and config.
+  [ "$(wc -c < "$f")" -gt 100000 ] && continue
+  grep -Iq . "$f" 2>/dev/null || continue
+  PROMPT+="
+=== FILE: $f ===
+$(cat -n "$f")
+"
+done
+
+AUDIT_OUTPUT=$(agy -p "$PROMPT" 2>&1)
 AGY_STATUS=$?
 
 echo "$AUDIT_OUTPUT"
@@ -88,6 +119,13 @@ if [ $AGY_STATUS -ne 0 ]; then
   echo -e "${RED}agy exited with status $AGY_STATUS.${NC}"
   echo -e "${DIM}If it says authentication required, run 'agy' once interactively to sign in.${NC}"
   block "The audit did not run, so the push can't be cleared."
+fi
+
+# Headless mode soft-denies tools it can't prompt for and still exits 0.
+if echo "$AUDIT_OUTPUT" | grep -qi "cannot prompt\|auto-denied"; then
+  echo -e "${YELLOW}agy tried to use a tool that headless mode can't approve.${NC}"
+  echo -e "${DIM}The files are already in the prompt, so re-run ./audit.sh. Don't use --dangerously-skip-permissions.${NC}"
+  block "The audit did not finish, so the push can't be cleared."
 fi
 
 # ── Gate ──────────────────────────────────────────────────────────────────────
@@ -133,7 +171,20 @@ if [ "$RUN_DEPS" = true ]; then
 
   echo -e "${BLUE}→ Advisories saved to $DEPS_FILE. Asking agy which ones the app reaches...${NC}"
   echo ""
-  agy -p "Read $DEPS_FILE. For each advisory, check whether this app actually calls the vulnerable code. List each one as REACHABLE or NOT REACHABLE with the file and line that proves it, then say which to upgrade first." || true
+  DEPS_PROMPT="Below is a dependency advisory scan and the app source. Do not call any tools.
+For each advisory, say whether this app actually calls the vulnerable code: REACHABLE or
+NOT REACHABLE, with the file and line that proves it. Then say which to upgrade first.
+
+=== $DEPS_FILE ===
+$(cat "$DEPS_FILE")
+"
+  for f in app/*.py app/*.js app/*.ts; do
+    [ -f "$f" ] && DEPS_PROMPT+="
+=== FILE: $f ===
+$(cat -n "$f")
+"
+  done
+  agy -p "$DEPS_PROMPT" || true
   echo ""
   echo -e "${DIM}Step 2 is advisory only. It does not block the push.${NC}"
 fi

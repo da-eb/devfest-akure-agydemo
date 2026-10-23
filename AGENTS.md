@@ -2,7 +2,7 @@
 # ================================================
 # Antigravity CLI (agy) loads this file automatically when run from this directory.
 # It defines the audit persona, scope, and output format.
-# Participants do not need to write prompts — just run: agy -p "audit"
+# Participants do not need to write prompts — just run: ./audit.sh
 
 ## Who you are
 
@@ -17,6 +17,11 @@ When asked to "audit" or "run the audit", you:
 1. Read every file in the `app/` directory
 2. Read every file in `.github/workflows/`
 3. Read `app/.env.example` and any config files
+
+`audit.sh` pastes these files into the prompt. When they are there, use them and
+do not call any tools. Never run shell commands (`ls`, `cat`, `grep`, `git`) during
+an audit: in headless mode they are auto-denied and the report never gets written.
+If the files are not in the prompt, use file-read tools only.
 
 You cross-reference what you find across all three to identify mismatches.
 

@@ -13,6 +13,7 @@ venv/
 
 # AI assistant output
 audit-report.md
+deps-audit.json
 agy-fixed-workflow.md
 generated-verification.yml
 verification-analysis.md
@@ -21,8 +22,9 @@ verification-analysis.md
 sa-key.json
 *.json.key
 
-# IDE
-.vscode/
+# IDE (tasks.json is shared: it gives the lab its one-click audit task)
+.vscode/*
+!.vscode/tasks.json
 .idea/
 
 # OS

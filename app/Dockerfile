@@ -3,7 +3,6 @@ FROM python:3.12-slim AS builder
 
 WORKDIR /app
 
-# Install dependencies into a virtual environment
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
@@ -20,17 +19,13 @@ RUN useradd --create-home --shell /bin/bash appuser
 
 WORKDIR /app
 
-# Copy venv from builder
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Copy app source
 COPY --chown=appuser:appuser . .
 
-# Switch to non-root user
 USER appuser
 
-# Expose port
 EXPOSE 8080
 
 # Health check built into the container
